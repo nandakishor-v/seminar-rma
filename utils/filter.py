@@ -1,4 +1,6 @@
-
+import numpy as np
+import pandas as pd
+from scipy.signal import butter, filtfilt
 
 def butterworth_lowpass_filter(data, cutoff, fs, order=2):
     """Apply a zero-lag Butterworth low-pass filter to the data.
@@ -12,15 +14,23 @@ def butterworth_lowpass_filter(data, cutoff, fs, order=2):
     Returns:
     - filtered_data: pandas DataFrame with the filtered data
     """
-
-    # Todo: Implement the Butterworth low-pass filter here
-    # Use a forward-backward filter (filtfilt) to avoid phase shift
-    # Hint: You can use scipy.signal.butter and scipy.signal.filtfilt
-
-    # Iterate over each column and apply the filter
-    # !Do not filter time or frame number columns!
-    # We use order = 2 as a default, because filtfilt effectively doubles the order
     
     # Design the Butterworth filter
-
-    pass 
+    b, a = butter(order, cutoff, fs=fs, btype='low')
+    
+    # Fallback to handle numpy arrays directly 
+    if isinstance(data, np.ndarray):
+        return filtfilt(b, a, data, axis=0)
+        
+    # Create a copy so we don't modify the original DataFrame
+    filtered_data = data.copy()
+    
+    # Iterate over each column and apply the filter
+    for col in filtered_data.columns:
+        # Added 'frame#' to our exclusion list
+        if col.lower() not in ['time', 'frame', 'frame_number', 'frame#']:
+            # ONLY apply the filter if the column contains numeric data
+            if np.issubdtype(filtered_data[col].dtype, np.number):
+                filtered_data[col] = filtfilt(b, a, filtered_data[col])
+            
+    return filtered_data
