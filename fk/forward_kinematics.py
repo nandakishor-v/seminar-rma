@@ -1,32 +1,76 @@
 import numpy as np
 
+def get_rotation_matrix(axis, angle):
+    axis = np.asarray(axis, dtype=float)
+    if np.linalg.norm(axis) == 0:
+        return np.eye(3)
+
+    axis = axis / np.linalg.norm(axis)
+    kx, ky, kz = axis
+    K = np.array([
+        [0, -kz, ky],
+        [kz, 0, -kx],
+        [-ky, kx, 0]
+    ])
+    return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+
+def _joint_angle(joint_name, q_dict):
+    for key in (joint_name, f"q_{joint_name}", f"{joint_name}_tilt"):
+        if key in q_dict:
+            return np.deg2rad(q_dict[key])
+    return 0.0
+
+
+def _joint_location(info, q_dict, joint_name):
+    loc = np.asarray(info.get("joint_location", info.get("location", [0.0, 0.0, 0.0])), dtype=float)
+    translation = np.asarray([
+        q_dict.get(f"{joint_name}_tx", 0.0),
+        q_dict.get(f"{joint_name}_ty", 0.0),
+        q_dict.get(f"{joint_name}_tz", 0.0),
+    ], dtype=float)
+    return loc + translation
+
+
+def get_single_joint_transform(joint_name, q_dict, kintree):
+    if joint_name not in kintree or joint_name in {"ground", None}:
+        return np.eye(3), np.zeros(3)
+
+    info = kintree[joint_name]
+    parent_name = info.get("parent", "ground")
+    R_parent, p_parent = get_single_joint_transform(parent_name, q_dict, kintree)
+
+    loc = _joint_location(info, q_dict, joint_name)
+    angle_val = _joint_angle(joint_name, q_dict)
+
+    axis = np.asarray(info.get("axis", [0.0, 0.0, 1.0]), dtype=float)
+    if np.any(axis < 0):
+        axis = np.abs(axis)
+        angle_val = -angle_val
+
+    R_local = get_rotation_matrix(axis, angle_val)
+    return R_parent @ R_local, p_parent + (R_parent @ loc)
+
+
 def forward_kinematics(q, key, kintree):
-    """Compute the forward kinematics for the given joint angles and kinematic tree.
+    q_dict = dict(zip(key, q))
+    joints = {}
+    markers = {}
 
-    Args:
-        q (ndarray): Generalized coordinates (joint angles) of shape (N,).
-        key (list): List of joint names corresponding to the angles in 'q'.
-        kintree (dict): Kinematic tree as in `model/kintree.py`.
+    for joint_name, joint_info in kintree.items():
+        R_g, p_g = get_single_joint_transform(joint_name, q_dict, kintree)
+        joints[joint_name] = p_g
+        for marker_name, marker_pos in joint_info.get("markers", {}).items():
+            markers[marker_name] = p_g + (R_g @ np.asarray(marker_pos, dtype=float))
 
-    Returns:
-        joints (dict): 3D positions of each joint after applying the forward kinematics, (J: 3).
-        markers (dict): 3D positions of each marker after applying the forward kinematics, (M: 3).
-    """
+    return joints, markers
 
-    ## ToDo: Your implementation here, hint: use recursion to traverse the kinematic tree
-    # Check when an axis is written with [-1, 0, 0] instead of [1, 0, 0] - then you need to invert the angle
-    pass
 
 def get_connections(kintree, joints):
-    """Get connections between joints for visualization.
-
-    Args:
-        kintree (dict): Kinematic tree as in `model/kintree.py`.
-        joints (dict): 3D positions of each joint after applying the forward kinematics, (J: 3).
-
-    Returns:
-        connections (list): List of tuples representing connection lines between joints.
-        e.g [([x1, y1, z1], [x2, y2, z2]), ([x3, y3, z3], [x4, y4, z4]), ...] for lines between joint1 and joint2, joint3 and joint4.
-    """
-    pass
-
+    """Draws a line between every child and its parent."""
+    connections = []
+    for child, info in kintree.items():
+        parent = info.get('parent')
+        if parent in joints and child in joints:
+            connections.append((joints[parent].tolist(), joints[child].tolist()))
+    return connections
