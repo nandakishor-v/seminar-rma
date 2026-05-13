@@ -28,7 +28,7 @@ def butterworth_lowpass_filter(data, cutoff, fs, order=2):
     # Iterate over each column and apply the filter
     for col in filtered_data.columns:
         # Added 'frame#' to our exclusion list
-        if col.lower() not in ['time', 'frame', 'frame_number', 'frame#']:
+        if col.lower() not in ['time', 'frame', 'frame#']:
             # ONLY apply the filter if the column contains numeric data
             if np.issubdtype(filtered_data[col].dtype, np.number):
                 filtered_data[col] = filtfilt(b, a, filtered_data[col])
