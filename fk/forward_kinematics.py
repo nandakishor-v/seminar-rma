@@ -12,7 +12,7 @@ def get_rotation_matrix(axis, angle):
         [kz, 0, -kx],
         [-ky, kx, 0]
     ])
-    return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+    return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)  # R = I + sin(θ)·K + (1 − cos(θ))·K² (Rodrigues' Rotation Formula) 
 
 
 def _joint_angle(joint_name, q_dict):

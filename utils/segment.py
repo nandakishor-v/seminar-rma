@@ -14,12 +14,11 @@ def segment_gait_cycles(grf_y_column, data, threshold=60):
     """
     grf_arr = np.asarray(grf_y_column)
     
-    # 1. IDENTIFY HEEL STRIKES
+    # IDENTIFY HEEL STRIKES
     above_thresh = (grf_arr > threshold).astype(int)    # boolean array where force is above the threshold
-    
     heel_strikes = np.where(np.diff(above_thresh) == 1)[0] + 1 # exact moment the signal goes from 0 to 1
     
-    # 2. EXTRACT CYCLES & APPLY FILTER 1 (Min Force >= 300N)
+    # EXTRACT CYCLES & APPLY FILTER 1 (Min Force >= 300N)
     raw_cycles = []
     for i in range(len(heel_strikes) - 1):
         start_idx = heel_strikes[i]
@@ -33,7 +32,6 @@ def segment_gait_cycles(grf_y_column, data, threshold=60):
     if not raw_cycles:
         return []
         
-    # 3. APPLY FILTER 2 (Duration Outliers)
     durations = [len(cycle) for cycle in raw_cycles]
     mean_dur = np.mean(durations)
     std_dur = np.std(durations)
@@ -66,7 +64,7 @@ def ensemble_average(cycles):
         return None, None
         
     num_points = 100
-    norm_t = np.linspace(0, 1, num_points)
+    norm_t = np.linspace(0, 1, num_points)  # Normalized time vector from 0 to 1 for interpolation
     
     # Identify numeric columns to average (skipping string labels if any exist)
     numeric_cols = [col for col in cycles[0].columns if np.issubdtype(cycles[0][col].dtype, np.number)]
