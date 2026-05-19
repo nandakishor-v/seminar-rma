@@ -21,7 +21,7 @@ def _joint_angle(joint_name, q_dict):
             return np.deg2rad(q_dict[key])
     return 0.0
 
-
+# determines the local starting position of a joint relative to its parent.
 def _joint_location(info, q_dict, joint_name):
     loc = np.asarray(info.get("joint_location", info.get("location", [0.0, 0.0, 0.0])), dtype=float)
     translation = np.asarray([
@@ -31,7 +31,7 @@ def _joint_location(info, q_dict, joint_name):
     ], dtype=float)
     return loc + translation
 
-
+# calculates a joint's global rotation and 3D position by tracing the human body's kinematic chain
 def get_single_joint_transform(joint_name, q_dict, kintree):
     if joint_name not in kintree or joint_name in {"ground", None}:
         return np.eye(3), np.zeros(3)
