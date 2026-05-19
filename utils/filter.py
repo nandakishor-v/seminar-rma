@@ -15,14 +15,13 @@ def butterworth_lowpass_filter(data, cutoff, fs, order=2):
     - filtered_data: pandas DataFrame with the filtered data
     """
     
-    # Design the Butterworth filter
+    # Butterworth filter
     b, a = butter(order, cutoff, fs=fs, btype='low')
     
     # Fallback to handle numpy arrays directly 
     if isinstance(data, np.ndarray):
         return filtfilt(b, a, data, axis=0)
         
-    # Create a copy so we don't modify the original DataFrame
     filtered_data = data.copy()
     
     # Iterate over each column and apply the filter

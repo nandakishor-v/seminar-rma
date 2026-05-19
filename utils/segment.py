@@ -15,11 +15,9 @@ def segment_gait_cycles(grf_y_column, data, threshold=60):
     grf_arr = np.asarray(grf_y_column)
     
     # 1. IDENTIFY HEEL STRIKES
-    # Create a boolean array where force is above the threshold
-    above_thresh = (grf_arr > threshold).astype(int)
+    above_thresh = (grf_arr > threshold).astype(int)    # boolean array where force is above the threshold
     
-    # Find the exact moment the signal goes from 0 to 1
-    heel_strikes = np.where(np.diff(above_thresh) == 1)[0] + 1
+    heel_strikes = np.where(np.diff(above_thresh) == 1)[0] + 1 # exact moment the signal goes from 0 to 1
     
     # 2. EXTRACT CYCLES & APPLY FILTER 1 (Min Force >= 300N)
     raw_cycles = []
@@ -42,10 +40,10 @@ def segment_gait_cycles(grf_y_column, data, threshold=60):
     
     segments = []
     for cycle in raw_cycles:
-        # Keep cycles within +/- 2 standard deviations
+        # Keeping cycles within +/- 2 standard deviations
         if abs(len(cycle) - mean_dur) <= 2 * std_dur:
             
-            # Make sure to make the time starts at 0 in each returned segment
+            # checking if the time starts at 0 in each returned segment
             if 'time' in cycle.columns:
                 cycle['time'] = cycle['time'] - cycle['time'].iloc[0]
                 
