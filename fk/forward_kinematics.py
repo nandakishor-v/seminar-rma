@@ -18,7 +18,7 @@ def get_rotation_matrix(axis, angle):
 def _joint_angle(joint_name, q_dict):
     for key in (joint_name, f"q_{joint_name}", f"{joint_name}_tilt"):
         if key in q_dict:
-            return np.deg2rad(q_dict[key])
+            return np.deg2rad(q_dict[key])    # turning degrees to radian for calculation
     return 0.0
 
 
@@ -27,24 +27,26 @@ def _joint_location(info, q_dict, joint_name):
     translation = np.asarray([
         q_dict.get(f"{joint_name}_tx", 0.0),
         q_dict.get(f"{joint_name}_ty", 0.0),
-        q_dict.get(f"{joint_name}_tz", 0.0),
+        q_dict.get(f"{joint_name}_tz", 0.0),                  # fetching joint's location(position) marking [0,0,0] if no data and translation
     ], dtype=float)
     return loc + translation
 
 
 def get_single_joint_transform(joint_name, q_dict, kintree):
     if joint_name not in kintree or joint_name in {"ground", None}:
-        return np.eye(3), np.zeros(3)
+        return np.eye(3), np.zeros(3)    # defaulting position as zeroes and rotation matrix as identity if no data found
 
     info = kintree[joint_name]
+    # calculating parent info everytime before the joint info is calculated for rotation and position, so we have a sequence of parent-child always
     parent_name = info.get("parent", "ground")
     R_parent, p_parent = get_single_joint_transform(parent_name, q_dict, kintree)
 
+    # calling the previous two functions which caluclated joint's location and angle
     loc = _joint_location(info, q_dict, joint_name)
     angle_val = _joint_angle(joint_name, q_dict)
 
-    axis = np.asarray(info.get("axis", [0.0, 0.0, 1.0]), dtype=float)
-    if np.any(axis < 0):
+    axis = np.asarray(info.get("axis", [0.0, 0.0, 1.0]), dtype=float)  # by default keeping z axis fixed if no info of axis found
+    if np.any(axis < 0):                          # converting axis and angle to positive
         axis = np.abs(axis)
         angle_val = -angle_val
 
@@ -53,15 +55,15 @@ def get_single_joint_transform(joint_name, q_dict, kintree):
 
 
 def forward_kinematics(q, key, kintree):
-    q_dict = dict(zip(key, q))
+    q_dict = dict(zip(key, q))   # all the kintree model joint's being zipped in the dictionary for us to loopover later
     joints = {}
     markers = {}
 
     for joint_name, joint_info in kintree.items():
-        R_g, p_g = get_single_joint_transform(joint_name, q_dict, kintree)
+        R_g, p_g = get_single_joint_transform(joint_name, q_dict, kintree)  #calling the previous function to calucalte the position & rotation for every joint
         joints[joint_name] = p_g
         for marker_name, marker_pos in joint_info.get("markers", {}).items():
-            markers[marker_name] = p_g + (R_g @ np.asarray(marker_pos, dtype=float))
+            markers[marker_name] = p_g + (R_g @ np.asarray(marker_pos, dtype=float)) # doing the same for joint markers relative to the actual joint
 
     return joints, markers
 
@@ -71,6 +73,6 @@ def get_connections(kintree, joints):
     connections = []
     for child, info in kintree.items():
         parent = info.get('parent')
-        if parent in joints and child in joints:
+        if parent in joints and child in joints:   # appending to the list
             connections.append((joints[parent].tolist(), joints[child].tolist()))
     return connections
