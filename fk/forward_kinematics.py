@@ -55,7 +55,6 @@ def get_single_joint_transform(joint_name, q_dict, kintree):
         return torch.eye(3, dtype=torch.float32), torch.zeros(3, dtype=torch.float32)
 
     info = kintree[joint_name]
-    # calculating parent info everytime before the joint info is calculated for rotation and position, so we have a sequence of parent-child always
     parent_name = info.get("parent", "ground")
     
     # Recurse to find parent
