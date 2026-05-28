@@ -2,143 +2,221 @@ import numpy as np
 import torch
 import pandas as pd
 
-def barzilai_borwein_step(xk, xk_minus_1, gk, gk_minus_1):
-    """Compute one Barzilai-Borwein step size.
-    
-    This helper is optional for the assignment. Keep it if you want to compare
-    first-order methods against LBFGS.
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _extract_experimental_markers(marker_row):
+    """Parse a row of marker_data into {marker_name: np.array(3,)}.
+
+    Handles the 'marker_marker_hip_r_x/y/z' column naming convention.
     """
-    # s_k = x_k - x_{k-1}
-    sk = xk - xk_minus_1
-    # y_k = g_k - g_{k-1}
-    yk = gk - gk_minus_1
-    
-    # BB Formula: (s_k^T * s_k) / (s_k^T * y_k)
-    numerator = np.dot(sk, sk)
-    denominator = np.dot(sk, yk)
-    
-    # Prevent division by zero if the gradient hasn't changed
-    if denominator == 0:
-        return 1e-3
-        
-    return numerator / denominator
+    if isinstance(marker_row, dict):
+        return {k: np.asarray(v, dtype=float) for k, v in marker_row.items()}
+
+    # pandas Series
+    if hasattr(marker_row, 'index'):
+        index = [str(c) for c in marker_row.index]
+        values = marker_row.to_numpy(dtype=float)
+        marker_map = {}
+        for i in range(len(index) - 2):
+            col = index[i]
+            if not col.endswith('_x'):
+                continue
+            base = col[:-2]  # strip '_x'
+            expected = [f"{base}_x", f"{base}_y", f"{base}_z"]
+            if index[i:i+3] != expected:
+                continue
+            marker_map[base] = values[i:i+3]
+        return marker_map
+    return {}
 
 
-def compute_ik_gradient(fk_function, q, key, kintree, marker_positions, bounds):
-    """Compute the gradient of the IK objective with respect to q.
+def _lookup_marker(exp_map, fk_name):
+    """Match an FK marker name to an experimental marker name.
 
-    Use your autodiff library of choice here. If you use PyTorch, make sure that
-    `numpy.ndarray` inputs are converted before the optimization step.
+    Tries several candidate names to handle 'marker_' prefix variations
+    and the 'marker_marker_' double-prefix in the CSV.
     """
-    # Wrap the numpy array into a PyTorch tensor that tracks gradients
-    q_tensor = torch.tensor(q, dtype=torch.float32, requires_grad=True)
-    
-    # Calculate the loss
-    loss = ik_target_function(fk_function, q_tensor, key, kintree, marker_positions, bounds)
-    
-    # Trigger PyTorch's Autograd to compute dL / dq
-    loss.backward()
-    
-    # Return the gradient as a standard numpy array
-    return q_tensor.grad.detach().numpy()
+    bare = fk_name.removeprefix('marker_')
+    candidates = [
+        fk_name,                    # e.g. 'marker_hip_r'
+        f"marker_{fk_name}",        # e.g. 'marker_marker_hip_r'
+        bare,                       # e.g. 'hip_r'
+        f"marker_{bare}",           # e.g. 'marker_hip_r'
+    ]
+    for c in candidates:
+        if c in exp_map:
+            return exp_map[c]
+    return None
 
+
+# ---------------------------------------------------------------------------
+# IK target function
+# ---------------------------------------------------------------------------
 
 def ik_target_function(fk_function, q, key, kintree, marker_positions, bounds):
-    """Compute the IK target function (loss) given joint angles and target positions."""
-    
-    # 1. Ensure q is a tensor
-    if not isinstance(q, torch.Tensor):
-        q = torch.tensor(q, dtype=torch.float32, requires_grad=True)
-        
-    # 2. Run forward kinematics for the current q
-    _, predicted_markers = fk_function(q, key, kintree)
-    
-    loss = torch.tensor(0.0, dtype=torch.float32)
-    
-    # 3. Compare model and experimental marker positions
-    for marker_name, p_pos in predicted_markers.items():
-        col_x = f"{marker_name}_x"
-        col_y = f"{marker_name}_y"
-        col_z = f"{marker_name}_z"
-        
-        # Skip missing markers (NaNs in the CSV)
-       # Skip missing markers (NaNs in the CSV)
-        if col_x in marker_positions and not pd.isna(marker_positions[col_x]):
-            real_pos = torch.tensor([
-                marker_positions[col_x],
-                marker_positions[col_y],
-                marker_positions[col_z]
-            ], dtype=torch.float32)
-            
-            # MAGIC FIX: Safely process dummy test lists vs real tensors
-            if isinstance(p_pos, (list, tuple, np.ndarray)):
-                # We MUST use torch.stack() here, otherwise PyTorch snaps the gradient chain!
-                p_pos_tensor = torch.stack([torch.as_tensor(v, dtype=torch.float32) for v in p_pos])
-            else:
-                p_pos_tensor = p_pos
-                
-            # Add Squared Error to the loss
-            loss = loss + torch.sum((p_pos_tensor - real_pos) ** 2)
-            
-    # 4. Optionally add a penalty for violating joint limits
+    """Compute the IK loss: MSE between FK markers and experimental markers.
+
+    Args:
+        fk_function: forward_kinematics(q, key, kintree) -> (joints, markers)
+        q (np.ndarray | torch.Tensor): Joint angles, shape (N,).
+        key (list): Joint names for q.
+        kintree (dict): Kinematic tree.
+        marker_positions: pandas Series or dict of experimental markers.
+        bounds (tuple): (lower, upper) np.ndarrays for joint limits.
+
+    Returns:
+        torch.Tensor: Scalar loss (differentiable).
+    """
+    # Convert q to torch tensor with grad if not already
+    if isinstance(q, np.ndarray):
+        q_t = torch.tensor(q, dtype=torch.float32, requires_grad=q.dtype == float)
+    elif isinstance(q, torch.Tensor):
+        q_t = q.float()
+    else:
+        q_t = torch.tensor(list(q), dtype=torch.float32)
+
+    # Parse experimental markers
+    exp_map = _extract_experimental_markers(marker_positions)
+
+    # Run FK -- returns dicts of torch tensors
+    _, fk_markers = fk_function(q_t, key, kintree)
+
+    # Accumulate squared errors over matched markers
+    sq_errors = []
+    for fk_name, fk_pos in fk_markers.items():
+        exp_pos = _lookup_marker(exp_map, fk_name)
+        if exp_pos is None:
+            continue  # skip missing markers
+        exp_t = torch.tensor(exp_pos, dtype=torch.float32)
+        sq_errors.append(torch.sum((fk_pos - exp_t) ** 2))
+
+    if len(sq_errors) == 0:
+        return torch.tensor(0.0, requires_grad=True)
+
+    loss = torch.mean(torch.stack(sq_errors))
+
+    # Optional: smooth joint limit penalty (ReLu-based)
     if bounds is not None:
-        min_b = torch.tensor(bounds[0], dtype=torch.float32)
-        max_b = torch.tensor(bounds[1], dtype=torch.float32)
-        
-        # Heavy penalty weight
-        penalty_weight = 10.0 
-        
-        # ReLU naturally returns 0 if inside bounds, and a positive number if outside
-        lower_penalty = torch.sum(torch.relu(min_b - q) ** 2)
-        upper_penalty = torch.sum(torch.relu(q - max_b) ** 2)
-        
-        loss = loss + penalty_weight * (lower_penalty + upper_penalty)
-        
-    # 5. Return a scalar loss
+        lower = torch.tensor(bounds[0], dtype=torch.float32)
+        upper = torch.tensor(bounds[1], dtype=torch.float32)
+        penalty = (torch.relu(lower - q_t) ** 2 + torch.relu(q_t - upper) ** 2).mean()
+        loss = loss + 0.01 * penalty  # small weight -- limits are soft
+
     return loss
 
 
-def ik_solver(fk_function, kintree, marker_data, key, bounds, max_iters=100, tol=1e-6):
-    """Inverse Kinematics solver looping through all frames using LBFGS."""
-    
-    q_sol = []
-    mse_history = []
-    
-    # 1. Choose an initial guess for the first frame (all zeros)
-    q_current = np.zeros(len(key), dtype=float)
+# ---------------------------------------------------------------------------
+# Gradient via autograd
+# ---------------------------------------------------------------------------
 
-    # Loop through every single frame in the walking trial
-    for idx in range(len(marker_data)):
-        frame_data = marker_data.iloc[idx]
-        
-        # Create a tensor from the PREVIOUS frame's solution (or zeros if it's frame 0)
-        q_tensor = torch.tensor(q_current, dtype=torch.float32, requires_grad=True)
-        
-        # 3. Optimize each frame with PyTorch LBFGS
-        optimizer = torch.optim.LBFGS([q_tensor], max_iter=max_iters, tolerance_change=tol)
-        
+def compute_ik_gradient(fk_function, q, key, kintree, marker_positions, bounds):
+    """Compute dL/dq via PyTorch autograd.
+
+    Args:
+        (same as ik_target_function)
+
+    Returns:
+        np.ndarray: Gradient of shape (N,).
+    """
+    q_t = torch.tensor(np.asarray(q, dtype=np.float32), requires_grad=True)
+
+    loss = ik_target_function(fk_function, q_t, key, kintree, marker_positions, bounds)
+    loss.backward()
+
+    return q_t.grad.detach().numpy().astype(float)
+
+
+# ---------------------------------------------------------------------------
+# Barzilai-Borwein step size (optional first-order helper)
+# ---------------------------------------------------------------------------
+
+def barzilai_borwein_step(xk, xk_minus_1, gk, gk_minus_1):
+    """Compute Barzilai-Borwein step size.
+
+    BB step: alpha = (s^T s) / (s^T y)  where s = xk - xk_minus_1, y = gk - gk_minus_1
+    """
+    s = xk - xk_minus_1
+    y = gk - gk_minus_1
+    denom = np.dot(s, y)
+    if abs(denom) < 1e-12:
+        return 1e-3  # fallback
+    return np.dot(s, s) / denom
+
+
+# ---------------------------------------------------------------------------
+# IK solver (LBFGS per frame)
+# ---------------------------------------------------------------------------
+
+def ik_solver(fk_function, kintree, marker_data, key, bounds, max_iters=100, tol=1e-6):
+    """Solve inverse kinematics for all frames using LBFGS.
+
+    Strategy:
+    - Frame 0: initialize q with zeros
+    - Frame i>0: initialize with solution from frame i-1 (warm start)
+    - Optimizer: LBFGS with strong_wolfe line search (same as Rosenbrock example)
+
+    Args:
+        fk_function: forward_kinematics callable
+        kintree (dict): Kinematic tree
+        marker_data (pd.DataFrame): All frames of experimental markers
+        key (list): Joint names
+        bounds (tuple): (lower, upper) arrays for joint limits
+        max_iters (int): LBFGS max iterations per frame
+        tol (float): Convergence tolerance
+
+    Returns:
+        q_sol (list of np.ndarray): Solved joint angles per frame
+        mse_history (list of float): Final loss per frame
+    """
+    n_frames = len(marker_data)
+    n_dof    = len(key)
+
+    q_sol       = []
+    mse_history = []
+
+    # Initial guess: zeros for frame 0
+    q_init = np.zeros(n_dof, dtype=np.float32)
+
+    for frame_idx in range(n_frames):
+        marker_row = marker_data.iloc[frame_idx]
+
+        # Wrap q as optimizable tensor
+        q_t = torch.tensor(q_init.copy(), dtype=torch.float32, requires_grad=True)
+
+        optimizer = torch.optim.LBFGS(
+            [q_t],
+            max_iter=max_iters,
+            tolerance_grad=tol,
+            tolerance_change=tol,
+            line_search_fn='strong_wolfe'
+        )
+
+        frame_losses = []
+
         def closure():
             optimizer.zero_grad()
-            loss = ik_target_function(fk_function, q_tensor, key, kintree, frame_data, bounds)
+            loss = ik_target_function(
+                fk_function, q_t, key, kintree, marker_row, bounds
+            )
             loss.backward()
+            frame_losses.append(loss.item())
             return loss
 
-        # Run the optimization loop for this specific frame
         optimizer.step(closure)
-        
-        # Extract the solved angles as a numpy array
-        q_current = q_tensor.detach().numpy()
-        
-        # Get the final lowest loss value achieved for this frame
-        final_loss = ik_target_function(fk_function, torch.tensor(q_current, dtype=torch.float32), key, kintree, frame_data, bounds).item()
-        
-        # 4. Store the solution and the loss history
-        q_sol.append(q_current)
-        mse_history.append(final_loss)
-        
-        # Optional: Print progress every 100 frames so you know it hasn't crashed
-        if idx % 100 == 0:
-            print(f"Solved Frame {idx}/{len(marker_data)} | Loss: {final_loss:.4f}")
 
-    # 5. Return the full trial solution
-    return np.array(q_sol), mse_history
+        q_solved = q_t.detach().numpy().astype(float)
+        final_loss = frame_losses[-1] if frame_losses else float('nan')
+
+        q_sol.append(q_solved)
+        mse_history.append(final_loss)
+
+        # Warm start: use current solution for next frame
+        q_init = q_solved.astype(np.float32)
+
+        if (frame_idx + 1) % 50 == 0 or frame_idx == 0:
+            print(f"  Frame {frame_idx+1:>4}/{n_frames}  loss={final_loss:.6f}")
+
+    return q_sol, mse_history
