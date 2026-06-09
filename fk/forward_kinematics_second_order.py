@@ -63,7 +63,7 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
 
     val_map = {}
     for name, qv, dqv, ddqv in zip(key, q, qdot, qddot):                      # getting the first and second order derivatives ( velocity and accelration)
-        normalized = name[2:] if name.startswith('q_') else name          # if name starts with q_ we normalise each marker by removing the q_
+        normalized = name[2:] if name.startswith('q_') else name          # if name starts with q_  we normalise each marker by removing the q_
         val_map[normalized] = (float(qv), float(dqv), float(ddqv))
 
     segments = {}
