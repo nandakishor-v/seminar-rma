@@ -1,14 +1,10 @@
 import numpy as np
 
 
-# ---------------------------------------------------------------------------
-# Rotation helpers
-# ---------------------------------------------------------------------------
-
 def _axis_angle_to_rot(axis, angle):
     """Rodrigues' rotation formula."""
     axis = np.array(axis, dtype=float)
-    norm = np.linalg.norm(axis)
+    norm = np.linalg.norm(axis)                              # formula same as we used in first assignment helpful for caluclating products
     if norm < 1e-10:
         return np.eye(3)
     axis = axis / norm
@@ -22,9 +18,6 @@ def _axis_angle_to_rot(axis, angle):
     return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
 
 
-# ---------------------------------------------------------------------------
-# Second-Order Forward Kinematics
-# ---------------------------------------------------------------------------
 
 def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
     """Compute second-order forward kinematics for the given generalized coordinates.
@@ -67,11 +60,10 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
                           linear_acceleration, angular_velocity, angular_acceleration}}
         markers  (dict): {marker_name: {position, velocity, acceleration}}
     """
-    # Build lookup: joint_name -> (q, qdot, qddot)
-    # Strip 'q_' prefix to match XML joint names
+
     val_map = {}
-    for name, qv, dqv, ddqv in zip(key, q, qdot, qddot):
-        normalized = name[2:] if name.startswith('q_') else name
+    for name, qv, dqv, ddqv in zip(key, q, qdot, qddot):                      # getting the first and second order derivatives ( velocity and accelration)
+        normalized = name[2:] if name.startswith('q_') else name          # if name starts with q_ we normalise each marker by removing the q_
         val_map[normalized] = (float(qv), float(dqv), float(ddqv))
 
     segments = {}
@@ -81,10 +73,10 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
         for body_name, body_info in body_dict.items():
 
             # 1. Body origin in global frame
-            joint_location = np.asarray(
+            joint_location = np.asarray(                               # starts to loop in our kintree through each body segment
                 body_info.get('joint_location', np.zeros(3)), dtype=float)
             pos_c   = pos_p + R_p @ joint_location
-            R_c     = R_p.copy()
+            R_c     = R_p.copy()                                   # copy all the r_p as r_c for recursion, as child adds up parents movement as well
             v_c     = v_p.copy()
             a_c     = a_p.copy()
             omega_c = omega_p.copy()
@@ -93,7 +85,7 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
             # Body quaternion skipped (OpenSim->MuJoCo artifact, same as FK)
 
             # 2. Apply joints
-            for joint_name, joint_info in body_info['joints'].items():
+            for joint_name, joint_info in body_info['joints'].items():              # loops through joint info and gets value for each joint movement for that body segment
 
                 r_joint = np.asarray(joint_info.get('pos', np.zeros(3)), dtype=float)
                 r_w     = R_c @ r_joint   # joint offset in world frame
@@ -117,7 +109,7 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
                 n_w = R_c @ axis_n   # joint axis in world frame
 
                 if jtype == 'hinge':
-                    # Position
+                    # Position                             #HINGE type joint
                     pos_c = pos_c + r_w
 
                     # Linear velocity / acceleration (contribution of r_w lever arm)
@@ -134,7 +126,7 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
 
                 elif jtype == 'slider':
                     # Total offset including displacement
-                    d_w   = r_w + qv * n_w
+                    d_w   = r_w + qv * n_w                           #Slider type Joint
                     pos_c = pos_c + d_w
 
                     # Linear velocity / acceleration (with Coriolis)
@@ -147,7 +139,7 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
                     # omega / alpha unchanged for slider
 
             # 3. Store segment state
-            segments[body_name] = {
+            segments[body_name] = {                               # we store all values of that body segment
                 'position':             pos_c.copy(),
                 'orientation':          R_c.copy(),
                 'linear_velocity':      v_c.copy(),
@@ -158,7 +150,7 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
 
             # 4. Compute marker kinematics
             for marker_name, marker_local in body_info.get('markers', {}).items():
-                m   = np.asarray(marker_local, dtype=float)
+                m   = np.asarray(marker_local, dtype=float)                              # loop for marker movement updates as well relative to that body segment
                 r_m = R_c @ m
                 markers[marker_name] = {
                     'position':     pos_c + r_m,
@@ -168,12 +160,12 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
                 }
 
             # 5. Recurse into children
-            _traverse(
-                body_info.get('children', {}),
+            _traverse(                                        # recursive calling the function but with children info so it runs entire function for children
+                body_info.get('children', {}),                # this time with arguments r_c as they will now be parent (r_p) for the upcoming children body segment
                 R_c, pos_c, v_c, a_c, omega_c, alpha_c
             )
 
-    _traverse(
+    _traverse(                # to start the first body segment(root) we start with zeros and ones
         kintree,
         R_p    = np.eye(3),
         pos_p  = np.zeros(3),
@@ -186,9 +178,7 @@ def forward_kinematics_second_order(q, qdot, qddot, key, kintree):
     return segments, markers
 
 
-# ---------------------------------------------------------------------------
-# Separate marker kinematics helper (as required by professor)
-# ---------------------------------------------------------------------------
+
 
 def get_marker_kinematics(segments, kintree):
     """Compute marker kinematics from already-computed segment kinematics.
